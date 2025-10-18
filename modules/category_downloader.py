@@ -305,6 +305,8 @@ class CategoryDownloader:
                 for subcategory in subcategories:
                     subcategory_dir = os.path.join(subcategories_dir, subcategory)
                     
+                    self.console.print(f"    [dim]Looking for: {subcategory_dir}[/dim]")
+                    
                     if not os.path.exists(subcategory_dir):
                         self.console.print(f"  [yellow]Subcategory directory not found: {subcategory}[/yellow]")
                         progress.update(task, advance=1)
@@ -313,6 +315,8 @@ class CategoryDownloader:
                     # Copy all files from subcategory to category (flat structure)
                     files = [f for f in os.listdir(subcategory_dir) 
                            if os.path.isfile(os.path.join(subcategory_dir, f))]
+                    
+                    self.console.print(f"    [dim]Found {len(files)} files in {subcategory}[/dim]")
                     
                     subcategory_copied = 0
                     subcategory_failed = 0
@@ -429,13 +433,19 @@ class CategoryDownloader:
             self.console.print("[red]No categories loaded. Call load_categories first.[/red]")
             return False
         
-        categories = [name for name, info in self.categories_data.items() 
-                     if info.type == 'category']
+        # Find all unique categories from subcategories
+        categories = set()
+        for name, info in self.categories_data.items():
+            if info.type == 'subcategory' and info.parent:
+                categories.add(info.parent)
+        
+        categories = list(categories)
         
         if not categories:
             self.console.print("[yellow]No categories found.[/yellow]")
             return True
         
+        self.console.print(f"[cyan]Found categories: {', '.join(sorted(categories))}[/cyan]")
         self.console.print(f"[cyan]Copying photos for {len(categories)} categories...[/cyan]")
         
         success_count = 0

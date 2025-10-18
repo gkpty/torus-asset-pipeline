@@ -137,6 +137,8 @@ class ConfigManager:
             return output_dirs.product_photos
         elif operation == "category_images":
             return output_dirs.category_images
+        elif operation == "subcategories":
+            return output_dirs.subcategories
         elif operation == "models":
             return output_dirs.models
         elif operation == "reports":

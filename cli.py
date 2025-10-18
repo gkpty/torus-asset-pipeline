@@ -498,7 +498,7 @@ def report(
 
 @app.command()
 def download_categories(
-    action: str = typer.Argument(..., help="Action to perform: 'subcategories', 'categories', 'subcategories-all', 'all', or 'list'"),
+    action: str = typer.Argument(..., help="Action to perform: 'subcategories', 'categories', 'subcategories-all', 'categories-all', 'all', or 'list'"),
     target: Optional[str] = typer.Argument(None, help="Specific subcategory or category name (required for subcategories/categories actions)"),
     lifestyle_folder_id: Optional[str] = typer.Option(None, "--lifestyle-folder", "-l", help="Google Drive lifestyle photos folder ID"),
     output_dir: Optional[str] = typer.Option(None, "--output-dir", "-o", help="Output directory for downloaded files"),
@@ -518,7 +518,7 @@ def download_categories(
         if not lifestyle_folder_id:
             lifestyle_folder_id = get_lifestyle_folder_id()
         if not output_dir:
-            output_dir = get_output_dir('product_photos')
+            output_dir = get_output_dir('base')
         if not credentials_file:
             credentials_file = get_credentials_file()
         
@@ -609,10 +609,19 @@ def download_categories(
             else:
                 console.print("[red]❌ Failed to download some subcategories[/red]")
                 raise typer.Exit(1)
+                
+        elif action == "categories-all":
+            console.print("[cyan]Processing all categories...[/cyan]")
+            success = downloader.download_all_categories(output_dir, subcategories_dir)
+            if success:
+                console.print("[green]✅ All categories processed successfully![/green]")
+            else:
+                console.print("[red]❌ Failed to process some categories[/red]")
+                raise typer.Exit(1)
         
         else:
             console.print(f"[red]Error: Unknown action '{action}'[/red]")
-            console.print("Valid actions: list, subcategories, categories, subcategories-all, all")
+            console.print("Valid actions: list, subcategories, categories, subcategories-all, categories-all, all")
             raise typer.Exit(1)
         
     except Exception as e:
