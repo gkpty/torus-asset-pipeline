@@ -5,10 +5,12 @@ A command-line interface for managing asset pipeline operations.
 """
 
 import typer
+import os
 from typing import Optional
 from pathlib import Path
 from modules.download import download_photos_from_drive, download_photos_from_drive_parallel
 from modules.config import get_folder_id, get_output_dir, get_credentials_file, get_download_config, get_logging_config
+from modules.photo_analyzer import PhotoAnalyzer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -386,6 +388,7 @@ def list():
     
     commands_table.add_row("download", "Download photos from Google Drive (sequential)", "📥")
     commands_table.add_row("download-fast", "Fast parallel download with threading (5x faster)", "⚡")
+    commands_table.add_row("report", "Generate comprehensive photo analysis report", "📊")
     commands_table.add_row("config", "Show current configuration settings", "⚙️")
     commands_table.add_row("list", "List available commands", "📋")
     commands_table.add_row("help", "Show help for a specific command", "❓")
@@ -393,6 +396,103 @@ def list():
     console.print(commands_table)
     
     console.print("\n[dim]💡 Tip: Use 'python cli.py <command> --help' for detailed help on any command[/dim]")
+
+
+@app.command()
+def report(
+    photos_dir: str = typer.Argument(..., help="Path to photos directory to analyze"),
+    csv_file: Optional[str] = typer.Option(None, "--csv", "-c", help="Path to CSV file with SKU data for missing SKU detection"),
+    min_photos: int = typer.Option(3, "--min-photos", "-m", help="Minimum number of photos required per SKU"),
+    max_size_mb: float = typer.Option(20.0, "--max-size", help="Maximum file size in MB"),
+    min_size_mb: float = typer.Option(0.1, "--min-size", help="Minimum file size in MB"),
+    min_width: int = typer.Option(200, "--min-width", help="Minimum image width in pixels"),
+    min_height: int = typer.Option(200, "--min-height", help="Minimum image height in pixels"),
+    min_quality: float = typer.Option(0.3, "--min-quality", help="Minimum quality score (0-1)"),
+    background_threshold: float = typer.Option(0.8, "--background-threshold", help="Background detection threshold (0-1)"),
+    export_csv: Optional[str] = typer.Option(None, "--export", "-e", help="Export comprehensive report to CSV file"),
+    show_non_jpeg: bool = typer.Option(True, "--non-jpeg/--no-non-jpeg", help="Show non-JPEG files"),
+    show_oversized: bool = typer.Option(True, "--oversized/--no-oversized", help="Show oversized files"),
+    show_undersized: bool = typer.Option(True, "--undersized/--no-undersized", help="Show undersized files"),
+    show_background: bool = typer.Option(True, "--background/--no-background", help="Show files with background"),
+    show_low_quality: bool = typer.Option(True, "--low-quality/--no-low-quality", help="Show low quality files"),
+    show_few_photos: bool = typer.Option(True, "--few-photos/--no-few-photos", help="Show SKUs with too few photos"),
+    show_missing: bool = typer.Option(True, "--missing/--no-missing", help="Show missing SKUs"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output")
+):
+    """Generate comprehensive photo analysis report with various checks and validations."""
+    console = Console()
+    
+    try:
+        # Validate inputs
+        if not os.path.exists(photos_dir):
+            console.print(f"[red]Error: Photos directory not found: {photos_dir}[/red]")
+            raise typer.Exit(1)
+        
+        if csv_file and not os.path.exists(csv_file):
+            console.print(f"[red]Error: CSV file not found: {csv_file}[/red]")
+            raise typer.Exit(1)
+        
+        # Create photo analyzer
+        analyzer = PhotoAnalyzer(console)
+        
+        # Configure analyzer settings
+        analyzer.max_file_size_mb = max_size_mb
+        analyzer.min_file_size_mb = min_size_mb
+        analyzer.min_dimensions = (min_width, min_height)
+        analyzer.min_quality_score = min_quality
+        analyzer.background_threshold = background_threshold
+        
+        console.print(f"[yellow]🔍 Analyzing photos in: {photos_dir}[/yellow]")
+        if csv_file:
+            console.print(f"[yellow]📊 Using CSV file: {csv_file}[/yellow]")
+        console.print(f"[yellow]📏 Minimum photos per SKU: {min_photos}[/yellow]")
+        
+        # Analyze photos
+        results = analyzer.analyze_photos_directory(photos_dir, min_photos)
+        
+        # Find missing SKUs if CSV provided
+        missing_skus = []
+        if csv_file:
+            console.print(f"[yellow]🔍 Checking for missing SKUs...[/yellow]")
+            missing_skus = analyzer.find_missing_skus(csv_file, photos_dir)
+        
+        # Filter results based on flags
+        filtered_results = []
+        for result in results:
+            should_include = False
+            
+            if show_non_jpeg and result.non_jpeg_count > 0:
+                should_include = True
+            if show_oversized and result.oversized_count > 0:
+                should_include = True
+            if show_undersized and result.undersized_count > 0:
+                should_include = True
+            if show_background and result.background_count > 0:
+                should_include = True
+            if show_low_quality and result.low_quality_count > 0:
+                should_include = True
+            if show_few_photos and result.total_photos < min_photos:
+                should_include = True
+            
+            if should_include or not any([show_non_jpeg, show_oversized, show_undersized, 
+                                        show_background, show_low_quality, show_few_photos]):
+                filtered_results.append(result)
+        
+        # Generate report
+        analyzer.generate_report(filtered_results, missing_skus if show_missing else [], 
+                               min_photos, export_csv)
+        
+        console.print(f"\n[green]✅ Report completed![/green]")
+        if export_csv:
+            console.print(f"[green]📄 Report exported to: {export_csv}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error generating report: {e}[/red]")
+        if verbose:
+            import traceback
+            console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
 
 if __name__ == "__main__":
     app()

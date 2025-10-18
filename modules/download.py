@@ -228,7 +228,7 @@ class GoogleDriveDownloaderSimple:
                         continue
                     
                     # Create SKU directory
-                    sku_dir = os.path.join(output_dir, supplier_name, sku_name)
+                    sku_dir = os.path.join(output_dir, sku_name)
                     os.makedirs(sku_dir, exist_ok=True)
                     
                     # Log SKU collection
@@ -362,7 +362,7 @@ class GoogleDriveDownloaderSimple:
                         continue
                     
                     # Create SKU directory
-                    sku_dir = os.path.join(output_dir, supplier_name, sku_name)
+                    sku_dir = os.path.join(output_dir, sku_name)
                     os.makedirs(sku_dir, exist_ok=True)
                     
                     self.console.print(f"    [green]Found {len(image_files)} images[/green]")
