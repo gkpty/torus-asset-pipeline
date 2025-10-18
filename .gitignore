@@ -1,0 +1,4 @@
+config.yaml
+credentials.json
+.env
+/photos
