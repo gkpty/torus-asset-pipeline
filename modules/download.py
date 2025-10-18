@@ -56,14 +56,28 @@ class GoogleDriveDownloaderSimple:
             raise
     
     def get_folder_contents(self, folder_id: str) -> List[Dict[str, Any]]:
-        """Get all files and folders within a Google Drive folder"""
+        """Get all files and folders within a Google Drive folder (handles pagination)"""
         try:
-            results = self.service.files().list(
-                q=f"'{folder_id}' in parents",
-                fields="nextPageToken, files(id, name, mimeType)",
-                orderBy="name"
-            ).execute()
-            return results.get('files', [])
+            all_files = []
+            page_token = None
+            
+            while True:
+                results = self.service.files().list(
+                    q=f"'{folder_id}' in parents",
+                    fields="nextPageToken, files(id, name, mimeType)",
+                    orderBy="name",
+                    pageToken=page_token
+                ).execute()
+                
+                files = results.get('files', [])
+                all_files.extend(files)
+                
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+            
+            return all_files
+            
         except HttpError as error:
             self.console.print(f'[red]Error accessing folder {folder_id}: {error}[/red]')
             return []
@@ -72,6 +86,26 @@ class GoogleDriveDownloaderSimple:
         """Check if file is an image based on extension"""
         image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp']
         return any(filename.lower().endswith(ext) for ext in image_extensions)
+    
+    def download_file_simple(self, file_id: str, file_path: str, original_name: str = "") -> bool:
+        """Simple file download method for category downloader"""
+        try:
+            request = self.service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+            
+            # Write file directly
+            with open(file_path, 'wb') as f:
+                f.write(fh.getvalue())
+            
+            return True
+            
+        except Exception as error:
+            self.console.print(f"[red]Error downloading {original_name}: {error}[/red]")
+            return False
     
     def download_file(self, file_id: str, file_path: str) -> bool:
         """Download a file from Google Drive without conversion"""

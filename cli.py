@@ -9,8 +9,9 @@ import os
 from typing import Optional
 from pathlib import Path
 from modules.download import download_photos_from_drive, download_photos_from_drive_parallel
-from modules.config import get_folder_id, get_output_dir, get_credentials_file, get_download_config, get_logging_config
+from modules.config import get_folder_id, get_output_dir, get_credentials_file, get_download_config, get_logging_config, get_lifestyle_folder_id, get_subcategories_dir
 from modules.photo_analyzer import PhotoAnalyzer
+from modules.category_downloader import CategoryDownloader
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -388,6 +389,7 @@ def list():
     
     commands_table.add_row("download", "Download photos from Google Drive (sequential)", "📥")
     commands_table.add_row("download-fast", "Fast parallel download with threading (5x faster)", "⚡")
+    commands_table.add_row("download-categories", "Download photos for categories and subcategories", "📁")
     commands_table.add_row("report", "Generate comprehensive photo analysis report", "📊")
     commands_table.add_row("config", "Show current configuration settings", "⚙️")
     commands_table.add_row("list", "List available commands", "📋")
@@ -488,6 +490,133 @@ def report(
         
     except Exception as e:
         console.print(f"[red]Error generating report: {e}[/red]")
+        if verbose:
+            import traceback
+            console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def download_categories(
+    action: str = typer.Argument(..., help="Action to perform: 'subcategories', 'categories', 'subcategories-all', 'all', or 'list'"),
+    target: Optional[str] = typer.Argument(None, help="Specific subcategory or category name (required for subcategories/categories actions)"),
+    lifestyle_folder_id: Optional[str] = typer.Option(None, "--lifestyle-folder", "-l", help="Google Drive lifestyle photos folder ID"),
+    output_dir: Optional[str] = typer.Option(None, "--output-dir", "-o", help="Output directory for downloaded files"),
+    credentials_file: Optional[str] = typer.Option(None, "--credentials", "-c", help="Path to Google Drive API credentials file"),
+    categories_csv: str = typer.Option("categories.csv", "--categories", help="Path to categories CSV file"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Number of parallel download workers (default: 5)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output")
+):
+    """Download photos for categories and subcategories from Google Drive lifestyle photos."""
+    console = Console()
+    
+    try:
+        # Load configuration
+        download_config = get_download_config()
+        
+        # Set defaults from config
+        if not lifestyle_folder_id:
+            lifestyle_folder_id = get_lifestyle_folder_id()
+        if not output_dir:
+            output_dir = get_output_dir('product_photos')
+        if not credentials_file:
+            credentials_file = get_credentials_file()
+        
+        # Use subcategories directory for subcategory downloads
+        subcategories_dir = get_subcategories_dir()
+        
+        # Validate required parameters
+        if action in ['subcategories', 'categories', 'all'] and not lifestyle_folder_id:
+            console.print("[red]Error: lifestyle_folder_id is required for download actions[/red]")
+            console.print("Use --lifestyle-folder or set it in config.yaml")
+            raise typer.Exit(1)
+        
+        if action in ['subcategories', 'categories'] and not target:
+            console.print("[red]Error: target subcategory/category name is required[/red]")
+            raise typer.Exit(1)
+        
+        # Create category downloader
+        downloader = CategoryDownloader(credentials_file, console)
+        
+        # Load categories
+        if not downloader.load_categories(categories_csv):
+            raise typer.Exit(1)
+        
+        # Execute action
+        if action == "list":
+            downloader.list_categories()
+            
+        elif action == "subcategories":
+            if target not in downloader.categories_data:
+                console.print(f"[red]Error: Subcategory '{target}' not found in categories CSV[/red]")
+                raise typer.Exit(1)
+            
+            if downloader.categories_data[target].type != 'subcategory':
+                console.print(f"[red]Error: '{target}' is not a subcategory[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"[cyan]Downloading photos for subcategory: {target}[/cyan]")
+            success = downloader.download_subcategory_photos(target, subcategories_dir, lifestyle_folder_id, workers)
+            if success:
+                console.print(f"[green]✅ Subcategory '{target}' downloaded successfully![/green]")
+            else:
+                console.print(f"[red]❌ Failed to download subcategory '{target}'[/red]")
+                raise typer.Exit(1)
+                
+        elif action == "categories":
+            if target not in downloader.categories_data:
+                console.print(f"[red]Error: Category '{target}' not found in categories CSV[/red]")
+                raise typer.Exit(1)
+            
+            if downloader.categories_data[target].type != 'category':
+                console.print(f"[red]Error: '{target}' is not a category[/red]")
+                raise typer.Exit(1)
+            
+            console.print(f"[cyan]Copying photos for category: {target}[/cyan]")
+            success = downloader.download_category_photos(target, output_dir, subcategories_dir)
+            if success:
+                console.print(f"[green]✅ Category '{target}' processed successfully![/green]")
+            else:
+                console.print(f"[red]❌ Failed to process category '{target}'[/red]")
+                raise typer.Exit(1)
+                
+        elif action == "all":
+            console.print("[cyan]Downloading all subcategories and categories...[/cyan]")
+            
+            # First download all subcategories
+            console.print("[blue]Step 1: Downloading subcategories...[/blue]")
+            subcat_success = downloader.download_all_subcategories(subcategories_dir, lifestyle_folder_id, workers)
+            
+            if subcat_success:
+                # Then process all categories
+                console.print("[blue]Step 2: Processing categories...[/blue]")
+                cat_success = downloader.download_all_categories(output_dir, subcategories_dir)
+                
+                if cat_success:
+                    console.print("[green]✅ All categories and subcategories processed successfully![/green]")
+                else:
+                    console.print("[red]❌ Failed to process some categories[/red]")
+                    raise typer.Exit(1)
+            else:
+                console.print("[red]❌ Failed to download some subcategories[/red]")
+                raise typer.Exit(1)
+                
+        elif action == "subcategories-all":
+            console.print("[cyan]Downloading all subcategories only...[/cyan]")
+            success = downloader.download_all_subcategories(subcategories_dir, lifestyle_folder_id, workers)
+            if success:
+                console.print("[green]✅ All subcategories downloaded successfully![/green]")
+            else:
+                console.print("[red]❌ Failed to download some subcategories[/red]")
+                raise typer.Exit(1)
+        
+        else:
+            console.print(f"[red]Error: Unknown action '{action}'[/red]")
+            console.print("Valid actions: list, subcategories, categories, subcategories-all, all")
+            raise typer.Exit(1)
+        
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
         if verbose:
             import traceback
             console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")

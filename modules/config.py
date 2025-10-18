@@ -23,6 +23,7 @@ class OutputDirectoriesConfig:
     base: str
     product_photos: str
     category_images: str
+    subcategories: str
     models: str
     reports: str
     temp: str
@@ -203,6 +204,16 @@ def get_download_config() -> DownloadConfig:
 def get_logging_config() -> LoggingConfig:
     """Get logging configuration"""
     return config_manager.get_logging_config()
+
+
+def get_lifestyle_folder_id() -> str:
+    """Get lifestyle photos folder ID"""
+    return get_folder_id("lifestyle_photos")
+
+
+def get_subcategories_dir() -> str:
+    """Get subcategories output directory"""
+    return get_output_dir("subcategories")
 
 
 def get_validation_config() -> ValidationConfig:
