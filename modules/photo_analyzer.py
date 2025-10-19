@@ -55,6 +55,7 @@ class PhotoAnalysisResult:
     size_mb: float
     dimensions: Tuple[int, int]
     has_background: bool
+    is_detail_shot: bool
     quality_score: float
     is_valid: bool
     issues: List[str]
@@ -72,6 +73,7 @@ class SKUAnalysisResult:
     oversized_count: int
     undersized_count: int
     background_count: int
+    detail_shot_count: int
     low_quality_count: int
     issues: List[str]
     photo_details: List[PhotoAnalysisResult]
@@ -80,8 +82,9 @@ class SKUAnalysisResult:
 class PhotoAnalyzer:
     """Comprehensive photo analysis tool"""
     
-    def __init__(self, console: Optional[Console] = None):
+    def __init__(self, console: Optional[Console] = None, debug: bool = False):
         self.console = console or Console()
+        self.debug = debug
         
         # Configuration
         self.max_file_size_mb = 20.0  # Maximum file size in MB
@@ -89,7 +92,7 @@ class PhotoAnalyzer:
         self.min_dimensions = (200, 200)  # Minimum width, height
         self.max_dimensions = (8000, 8000)  # Maximum width, height
         self.min_quality_score = 0.3  # Minimum quality score (0-1)
-        self.background_threshold = 0.8  # Threshold for background detection
+        self.background_threshold = 0.8  # Threshold for background detection (legacy, not used in new algorithm)
         
         # Supported image formats
         self.image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
@@ -139,6 +142,7 @@ class PhotoAnalyzer:
         # Analyze image if Pillow is available
         dimensions = (0, 0)
         has_background = False
+        is_detail_shot = False
         quality_score = 1.0
         
         if PILLOW_AVAILABLE:
@@ -152,10 +156,13 @@ class PhotoAnalyzer:
                     elif dimensions[0] > self.max_dimensions[0] or dimensions[1] > self.max_dimensions[1]:
                         issues.append(f"Image too large ({dimensions[0]}x{dimensions[1]} > {self.max_dimensions[0]}x{self.max_dimensions[1]})")
                     
-                    # Check for background (simplified detection)
+                    # Check for background (improved detection)
                     has_background = self._detect_background(img)
                     if has_background:
                         issues.append("Has background")
+                    
+                    # Check for detail shot
+                    is_detail_shot = self._detect_detail_shot(img)
                     
                     # Calculate quality score (simplified)
                     quality_score = self._calculate_quality_score(img, size_mb)
@@ -178,29 +185,188 @@ class PhotoAnalyzer:
             size_mb=size_mb,
             dimensions=dimensions,
             has_background=has_background,
+            is_detail_shot=is_detail_shot,
             quality_score=quality_score,
             is_valid=is_valid,
             issues=issues
         )
     
     def _detect_background(self, image: Image.Image) -> bool:
-        """Detect if image has a background (simplified detection)"""
+        """Detect if image has a background using improved algorithm"""
         try:
+            if not PILLOW_AVAILABLE:
+                return False
+            
             # Convert to RGB if necessary
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
             # Resize for faster processing
-            image.thumbnail((100, 100), Image.Resampling.LANCZOS)
+            image.thumbnail((200, 200), Image.Resampling.LANCZOS)
             img_array = np.array(image)
             
-            # Check if image has significant white/light areas (background)
-            # This is a simplified detection - in practice, you might want more sophisticated analysis
-            white_pixels = np.sum(np.all(img_array > 200, axis=2))
-            total_pixels = img_array.size // 3
-            white_ratio = white_pixels / total_pixels
+            # Method 1: Check for uniform white/light background
+            # Look for areas that are consistently white/light around the edges
+            height, width = img_array.shape[:2]
             
-            return white_ratio > self.background_threshold
+            # Sample edge pixels (border of the image)
+            edge_pixels = []
+            edge_pixels.extend(img_array[0, :])  # Top edge
+            edge_pixels.extend(img_array[-1, :])  # Bottom edge
+            edge_pixels.extend(img_array[:, 0])  # Left edge
+            edge_pixels.extend(img_array[:, -1])  # Right edge
+            
+            edge_pixels = np.array(edge_pixels)
+            
+            # Check if edge pixels are predominantly white/light
+            white_edge_pixels = np.sum(np.all(edge_pixels > 220, axis=1))
+            edge_white_ratio = white_edge_pixels / len(edge_pixels)
+            
+            # Method 2: Check for low contrast (indicating uniform background)
+            # Calculate standard deviation of pixel values
+            gray = np.mean(img_array, axis=2)
+            contrast = np.std(gray)
+            
+            # Method 3: Check for corner uniformity
+            # Sample corners to see if they're similar (indicating background)
+            corner_size = min(20, height//4, width//4)
+            corners = [
+                img_array[:corner_size, :corner_size],  # Top-left
+                img_array[:corner_size, -corner_size:],  # Top-right
+                img_array[-corner_size:, :corner_size],  # Bottom-left
+                img_array[-corner_size:, -corner_size:]  # Bottom-right
+            ]
+            
+            corner_means = [np.mean(corner) for corner in corners]
+            corner_std = np.std(corner_means)
+            
+            # Method 4: Check for center vs edge difference
+            # If center is very different from edges, it's likely a product shot
+            center_h, center_w = height//2, width//2
+            center_size = min(40, height//3, width//3)
+            center_region = img_array[center_h-center_size//2:center_h+center_size//2,
+                                    center_w-center_size//2:center_w+center_size//2]
+            
+            center_mean = np.mean(center_region)
+            edge_mean = np.mean(edge_pixels)
+            center_edge_diff = abs(center_mean - edge_mean)
+            
+            # Decision logic - be more conservative about background detection
+            # Only flag as background if it's clearly a problematic background, not clean product photos
+            
+            has_uniform_edges = edge_white_ratio > 0.8  # Higher threshold for edge uniformity
+            has_low_contrast = contrast < 25  # Lower contrast threshold
+            has_uniform_corners = corner_std < 15  # More strict corner uniformity
+            has_low_center_edge_diff = center_edge_diff < 20  # Lower center-edge difference
+            
+            # Only consider it a background if:
+            # 1. Edges are very uniform (high white ratio) AND
+            # 2. Very low contrast (indicating no clear subject) AND
+            # 3. Very uniform corners AND
+            # 4. Very low center-edge difference (indicating no focused subject)
+            # This should catch cluttered/problematic backgrounds but not clean product photos
+            
+            is_background = (has_uniform_edges and has_low_contrast and 
+                           has_uniform_corners and has_low_center_edge_diff)
+            
+            # Additional check: if there's any significant contrast, it's likely a product photo
+            if contrast > 40:
+                is_background = False
+            
+            # Debug output
+            if self.debug:
+                filename = os.path.basename(image.filename) if hasattr(image, 'filename') else 'unknown'
+                self.console.print(f"[dim]Background detection for {filename}:[/dim]")
+                self.console.print(f"  [dim]Edge white ratio: {edge_white_ratio:.2f} (uniform: {has_uniform_edges})[/dim]")
+                self.console.print(f"  [dim]Contrast: {contrast:.2f} (low: {has_low_contrast})[/dim]")
+                self.console.print(f"  [dim]Corner std: {corner_std:.2f} (uniform: {has_uniform_corners})[/dim]")
+                self.console.print(f"  [dim]Center-edge diff: {center_edge_diff:.2f} (low: {has_low_center_edge_diff})[/dim]")
+                self.console.print(f"  [dim]Result: {'BACKGROUND' if is_background else 'NO BACKGROUND'}[/dim]")
+            
+            return is_background
+            
+        except Exception:
+            return False
+    
+    def _detect_detail_shot(self, image: Image.Image) -> bool:
+        """Detect if image is a product detail shot (close-up, focused on specific part)"""
+        try:
+            if not PILLOW_AVAILABLE:
+                return False
+            
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Resize for faster processing
+            image.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            img_array = np.array(image)
+            height, width = img_array.shape[:2]
+            
+            # Method 1: Check for high contrast (detail shots usually have high contrast)
+            gray = np.mean(img_array, axis=2)
+            contrast = np.std(gray)
+            
+            # Method 2: Check for edge density (detail shots often have many edges)
+            # Convert to grayscale and apply edge detection
+            from PIL import ImageFilter
+            gray_image = image.convert('L')
+            edges = gray_image.filter(ImageFilter.FIND_EDGES)
+            edge_array = np.array(edges)
+            edge_density = np.sum(edge_array > 50) / edge_array.size
+            
+            # Method 3: Check for center focus (detail shots usually focus on center)
+            center_h, center_w = height//2, width//2
+            center_size = min(60, height//2, width//2)
+            center_region = img_array[center_h-center_size//2:center_h+center_size//2,
+                                    center_w-center_size//2:center_w+center_size//2]
+            
+            # Check if center has higher contrast than edges
+            center_gray = np.mean(center_region, axis=2)
+            center_contrast = np.std(center_gray)
+            
+            # Sample edge regions
+            edge_pixels = []
+            edge_pixels.extend(img_array[0, :])  # Top edge
+            edge_pixels.extend(img_array[-1, :])  # Bottom edge
+            edge_pixels.extend(img_array[:, 0])  # Left edge
+            edge_pixels.extend(img_array[:, -1])  # Right edge
+            edge_pixels = np.array(edge_pixels)
+            edge_gray = np.mean(edge_pixels, axis=1)
+            edge_contrast = np.std(edge_gray)
+            
+            # Method 4: Check for uniform background (detail shots often have clean backgrounds)
+            # Sample edge pixels for background detection
+            white_edge_pixels = np.sum(np.all(edge_pixels > 220, axis=1))
+            edge_white_ratio = white_edge_pixels / len(edge_pixels)
+            
+            # Decision logic for detail shots:
+            # 1. High overall contrast (indicating focused detail)
+            # 2. High edge density (lots of detail/edges)
+            # 3. Center has higher contrast than edges (focused on center)
+            # 4. Clean background (uniform edges)
+            
+            has_high_contrast = contrast > 40
+            has_high_edge_density = edge_density > 0.15
+            has_center_focus = center_contrast > edge_contrast * 1.2
+            has_clean_background = edge_white_ratio > 0.6
+            
+            # Consider it a detail shot if:
+            # - High contrast AND (high edge density OR center focus)
+            # - AND has clean background (not cluttered)
+            is_detail_shot = (has_high_contrast and (has_high_edge_density or has_center_focus)) and has_clean_background
+            
+            # Debug output
+            if self.debug:
+                filename = os.path.basename(image.filename) if hasattr(image, 'filename') else 'unknown'
+                self.console.print(f"[dim]Detail shot detection for {filename}:[/dim]")
+                self.console.print(f"  [dim]Contrast: {contrast:.2f} (high: {has_high_contrast})[/dim]")
+                self.console.print(f"  [dim]Edge density: {edge_density:.3f} (high: {has_high_edge_density})[/dim]")
+                self.console.print(f"  [dim]Center focus: {center_contrast:.2f} vs {edge_contrast:.2f} (focused: {has_center_focus})[/dim]")
+                self.console.print(f"  [dim]Clean background: {edge_white_ratio:.2f} (clean: {has_clean_background})[/dim]")
+                self.console.print(f"  [dim]Result: {'DETAIL SHOT' if is_detail_shot else 'NOT DETAIL SHOT'}[/dim]")
+            
+            return is_detail_shot
             
         except Exception:
             return False
@@ -273,6 +439,7 @@ class PhotoAnalyzer:
         oversized_count = sum(1 for p in photo_details if p.size_mb > self.max_file_size_mb)
         undersized_count = sum(1 for p in photo_details if p.size_mb < self.min_file_size_mb)
         background_count = sum(1 for p in photo_details if p.has_background)
+        detail_shot_count = sum(1 for p in photo_details if p.is_detail_shot)
         low_quality_count = sum(1 for p in photo_details if p.quality_score < self.min_quality_score)
         
         # Add SKU-level issues
@@ -302,6 +469,7 @@ class PhotoAnalyzer:
             oversized_count=oversized_count,
             undersized_count=undersized_count,
             background_count=background_count,
+            detail_shot_count=detail_shot_count,
             low_quality_count=low_quality_count,
             issues=issues,
             photo_details=photo_details
@@ -421,7 +589,8 @@ class PhotoAnalyzer:
         return missing_skus
     
     def generate_report(self, results: List[SKUAnalysisResult], missing_skus: List[Dict[str, Any]], 
-                       min_photos: int = 3, export_csv: Optional[str] = None) -> None:
+                       min_photos: int = 3, export_csv: Optional[str] = None, 
+                       show_detail_shots: bool = True) -> None:
         """Generate a comprehensive report"""
         
         # Summary statistics
@@ -488,11 +657,26 @@ class PhotoAnalyzer:
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("SKU", style="cyan")
             table.add_column("Background Count", style="magenta")
+            table.add_column("Detail Shot Count", style="blue")
             
             for result in background_skus:
-                table.add_row(result.sku, str(result.background_count))
+                table.add_row(result.sku, str(result.background_count), str(result.detail_shot_count))
             
             self.console.print(table)
+        
+        # Detail shots
+        if show_detail_shots:
+            detail_shot_skus = [r for r in results if r.detail_shot_count > 0]
+            if detail_shot_skus:
+                self.console.print(f"\n[blue]SKUs with detail shots ({len(detail_shot_skus)}):[/blue]")
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("SKU", style="cyan")
+                table.add_column("Detail Shot Count", style="blue")
+                
+                for result in detail_shot_skus:
+                    table.add_row(result.sku, str(result.detail_shot_count))
+                
+                self.console.print(table)
         
         # Low quality files
         low_quality_skus = [r for r in results if r.low_quality_count > 0]
@@ -546,7 +730,7 @@ class PhotoAnalyzer:
                 fieldnames = [
                     'sku', 'total_photos', 'valid_photos', 'invalid_photos',
                     'non_jpeg_count', 'oversized_count', 'undersized_count', 
-                    'background_count', 'low_quality_count', 'issues', 'status'
+                    'background_count', 'detail_shot_count', 'low_quality_count', 'issues', 'status'
                 ]
                 
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -563,6 +747,7 @@ class PhotoAnalyzer:
                         'oversized_count': result.oversized_count,
                         'undersized_count': result.undersized_count,
                         'background_count': result.background_count,
+                        'detail_shot_count': result.detail_shot_count,
                         'low_quality_count': result.low_quality_count,
                         'issues': '; '.join(result.issues) if result.issues else '',
                         'status': 'OK' if not result.issues else 'ISSUES'

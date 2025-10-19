@@ -12,6 +12,7 @@ from modules.download import download_photos_from_drive, download_photos_from_dr
 from modules.config import get_folder_id, get_output_dir, get_credentials_file, get_download_config, get_logging_config, get_lifestyle_folder_id, get_subcategories_dir
 from modules.photo_analyzer import PhotoAnalyzer
 from modules.category_downloader import CategoryDownloader
+from modules.photo_processor import PhotoProcessor
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -391,6 +392,8 @@ def list():
     commands_table.add_row("download-fast", "Fast parallel download with threading (5x faster)", "⚡")
     commands_table.add_row("download-categories", "Download photos for categories and subcategories", "📁")
     commands_table.add_row("report", "Generate comprehensive photo analysis report", "📊")
+    commands_table.add_row("convert", "Convert non-JPEG photos to JPEG format", "🔄")
+    commands_table.add_row("rename", "Rename photos to sequential format (1.jpg, 2.jpg, etc.)", "🏷️")
     commands_table.add_row("config", "Show current configuration settings", "⚙️")
     commands_table.add_row("list", "List available commands", "📋")
     commands_table.add_row("help", "Show help for a specific command", "❓")
@@ -416,6 +419,7 @@ def report(
     show_oversized: bool = typer.Option(True, "--oversized/--no-oversized", help="Show oversized files"),
     show_undersized: bool = typer.Option(True, "--undersized/--no-undersized", help="Show undersized files"),
     show_background: bool = typer.Option(True, "--background/--no-background", help="Show files with background"),
+    show_detail_shots: bool = typer.Option(True, "--detail-shots/--no-detail-shots", help="Show SKUs with detail shots"),
     show_low_quality: bool = typer.Option(True, "--low-quality/--no-low-quality", help="Show low quality files"),
     show_few_photos: bool = typer.Option(True, "--few-photos/--no-few-photos", help="Show SKUs with too few photos"),
     show_missing: bool = typer.Option(True, "--missing/--no-missing", help="Show missing SKUs"),
@@ -435,7 +439,7 @@ def report(
             raise typer.Exit(1)
         
         # Create photo analyzer
-        analyzer = PhotoAnalyzer(console)
+        analyzer = PhotoAnalyzer(console, debug=verbose)
         
         # Configure analyzer settings
         analyzer.max_file_size_mb = max_size_mb
@@ -471,18 +475,20 @@ def report(
                 should_include = True
             if show_background and result.background_count > 0:
                 should_include = True
+            if show_detail_shots and result.detail_shot_count > 0:
+                should_include = True
             if show_low_quality and result.low_quality_count > 0:
                 should_include = True
             if show_few_photos and result.total_photos < min_photos:
                 should_include = True
             
             if should_include or not any([show_non_jpeg, show_oversized, show_undersized, 
-                                        show_background, show_low_quality, show_few_photos]):
+                                        show_background, show_detail_shots, show_low_quality, show_few_photos]):
                 filtered_results.append(result)
         
         # Generate report
         analyzer.generate_report(filtered_results, missing_skus if show_missing else [], 
-                               min_photos, export_csv)
+                               min_photos, export_csv, show_detail_shots)
         
         console.print(f"\n[green]✅ Report completed![/green]")
         if export_csv:
@@ -624,6 +630,94 @@ def download_categories(
             console.print("Valid actions: list, subcategories, categories, subcategories-all, categories-all, all")
             raise typer.Exit(1)
         
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        if verbose:
+            import traceback
+            console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def convert(
+    photos_dir: str = typer.Option(None, "--photos-dir", "-p", help="Directory containing photos to convert"),
+    quality: int = typer.Option(85, "--quality", "-q", help="JPEG quality (1-100, default: 85)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output")
+):
+    """Convert all non-JPEG photos to JPEG format."""
+    console = Console()
+    
+    try:
+        # Set default from config if not provided
+        if not photos_dir:
+            photos_dir = get_output_dir('product_photos')
+        
+        # Validate quality parameter
+        if not 1 <= quality <= 100:
+            console.print("[red]Error: Quality must be between 1 and 100[/red]")
+            raise typer.Exit(1)
+        
+        # Initialize photo processor
+        processor = PhotoProcessor(console)
+        
+        # Convert photos
+        result = processor.convert_photos_to_jpeg(photos_dir, quality, verbose)
+        
+        if 'error' in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            raise typer.Exit(1)
+        
+        # Show final summary
+        if result['total_converted'] > 0:
+            console.print(f"\n[green]✅ Successfully converted {result['total_converted']} files in {result['total_skus_processed']} SKUs[/green]")
+        else:
+            console.print(f"\n[yellow]No files needed conversion[/yellow]")
+            
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        if verbose:
+            import traceback
+            console.print(f"[red]Traceback: {traceback.format_exc()}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def rename(
+    photos_dir: str = typer.Option(None, "--photos-dir", "-p", help="Directory containing photos to rename"),
+    sequential: bool = typer.Option(False, "--sequential", "-s", help="Rename photos to sequential format (1.jpg, 2.jpg, etc.)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output")
+):
+    """Rename photos in various formats."""
+    console = Console()
+    
+    try:
+        # Set default from config if not provided
+        if not photos_dir:
+            photos_dir = get_output_dir('product_photos')
+        
+        # Initialize photo processor
+        processor = PhotoProcessor(console)
+        
+        if sequential:
+            # Rename photos to sequential format
+            result = processor.rename_photos_sequential(photos_dir, verbose)
+            
+            if 'error' in result:
+                console.print(f"[red]Error: {result['error']}[/red]")
+                if result.get('non_jpeg_files'):
+                    console.print(f"[yellow]Found {len(result['non_jpeg_files'])} non-JPEG files that need conversion first.[/yellow]")
+                    console.print(f"[yellow]Run: python cli.py convert --photos-dir {photos_dir}[/yellow]")
+                raise typer.Exit(1)
+            
+            # Show final summary
+            if result['total_renamed'] > 0:
+                console.print(f"\n[green]✅ Successfully renamed {result['total_renamed']} files in {result['total_skus_processed']} SKUs[/green]")
+            else:
+                console.print(f"\n[yellow]No files needed renaming[/yellow]")
+        else:
+            console.print("[red]Error: No rename operation specified. Use --sequential for sequential renaming.[/red]")
+            raise typer.Exit(1)
+            
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         if verbose:
